@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Fruit Match — Ultra Smooth</title>
+<style>
+  :root{
+    --cols:4; --rows:6;
+    --cell:88px; --gap:8px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; font-family: "Segoe UI", Roboto, Arial, sans-serif;
+    background: linear-gradient(270deg,#ff0044,#ff8c00,#ffd400,#3bd200,#0088ff,#6a0dad);
+    background-size:1400% 1400%; animation:rainbow 16s linear infinite;
+    display:flex; flex-direction:column; align-items:center; min-height:100vh; color:#111;
+  }
+  @keyframes rainbow{0%{background-position:0 50%}50%{background-position:100% 50%}100%{background-position:0 50%}}
+  .topbar{ width:calc(var(--cols)*var(--cell) + (var(--cols)-1)*var(--gap)); max-width:720px; margin-top:18px; display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  .status{ color:#fff; font-weight:800; text-shadow:0 3px 8px rgba(0,0,0,0.4) }
+
+  /* Board container */
+  #boardWrap{ width:calc(var(--cols) * var(--cell) + (var(--cols)-1)*var(--gap)); max-width:720px; margin-top:12px; position:relative; }
+  #board{
+    width:100%; padding:var(--gap); background: rgba(255,255,255,0.085);
+    border-radius:14px; box-shadow: 0 20px 40px rgba(0,0,0,0.18);
+    display:grid; grid-template-columns: repeat(var(--cols), var(--cell));
+    grid-template-rows: repeat(var(--rows), var(--cell)); gap:var(--gap);
+    position:relative; overflow:visible;
+  }
+  /* slot backgrounds (grid cells) */
+  .slot{ width:var(--cell); height:var(--cell); border-radius:12px; background: rgba(255,255,255,0.06); display:block; }
+
+  /* tiles are absolutely positioned for smooth movement */
+  .tile{
+    position:absolute; width:var(--cell); height:var(--cell);
+    display:flex; align-items:center; justify-content:center;
+    font-size:46px; border-radius:12px; background: linear-gradient(180deg,#fff,#ffeccf);
+    box-shadow: 0 12px 26px rgba(0,0,0,0.18); user-select:none; cursor:pointer;
+    transition: top 360ms cubic-bezier(.2,.9,.2,1), left 360ms cubic-bezier(.2,.9,.2,1), transform 220ms ease;
+    z-index:5;
+  }
+  .tile.pop{ animation: popAnim 420ms cubic-bezier(.2,.9,.2,1) forwards; }
+  @keyframes popAnim{ 0%{ transform: scale(1); opacity:1 } 50%{ transform: scale(1.4); opacity:.9 } 100%{ transform: scale(0); opacity:0 } }
+
+  /* plant & blast visuals */
+  .plant{ box-shadow:0 0 28px rgba(255,80,80,0.85); transform: scale(0.92); transition: transform 420ms ease; }
+  .blast{ animation: blastAnim 900ms ease-out forwards; }
+  @keyframes blastAnim{ 0%{ transform:scale(1); filter:brightness(1)} 50%{ transform:scale(2.4); filter:brightness(2); } 100%{ transform:scale(0); opacity:0 } }
+
+  /* sparks */
+  .spark{
+    position:absolute; width:8px; height:8px; border-radius:50%; pointer-events:none;
+    transform-origin:center; z-index:25; opacity:1;
+    transition: transform 600ms ease-out, opacity 600ms ease-out;
+  }
+
+  /* controls */
+  .controls{ margin-top:12px; display:flex; gap:12px; align-items:center; }
+  .btn{ padding:10px 14px; border-radius:10px; border:none; cursor:pointer; font-weight:800; background:#fff3cd; box-shadow:0 8px 20px rgba(0,0,0,0.18) }
+  .btn:disabled{ background:#aaa; cursor:not-allowed; }
+
+  /* pause modal */
+  #pauseModal{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,0.45); z-index:2000 }
+  #pauseBox{ width:360px; background:linear-gradient(180deg,#fff6e0,#f0dba2); padding:18px; border-radius:12px; text-align:center; box-shadow:0 20px 50px rgba(0,0,0,0.25) }
+  #pauseBox h3{ margin:0 0 12px; color:#5a340b }
+  #pauseBox .row{ margin-top:8px; display:flex; gap:8px; justify-content:center; align-items:center }
+  #volumeLabel{ font-weight:800; color:#5a340b; margin-bottom:6px; display:block }
+
+  /* responsiveness */
+  @media (max-width:420px){
+    :root{ --cell:72px; --gap:6px }
+  }
+</style>
+</head>
+<body>
+
+  <div class="topbar">
+    <div class="status" id="scoreDisplay">Score: 0 | Coins: 0</div>
+    <div style="display:flex; gap:8px;">
+      <button class="btn" id="shuffleBtn">Shuffle (-10)</button>
+      <button class="btn" id="bombBtn"><span id="bombIcon">💣</span> BOMB (15)</button>
+      <button class="btn" id="pauseBtn">Pause</button>
+    </div>
+  </div>
+
+  <div id="boardWrap">
+    <div id="board"></div>
+  </div>
+
+  <div class="controls">
+    <div style="color:#fff; font-weight:700; text-shadow:0 3px 8px rgba(0,0,0,0.3)">Click once anywhere to enable sound</div>
+  </div>
+
+  <!-- Pause Modal -->
+  <div id="pauseModal">
+    <div id="pauseBox">
+      <h3>Game Paused</h3>
+      <div id="volumeLabel">Volume</div>
+      <input id="volumeSlider" type="range" min="0" max="1" step="0.01" value="0.6">
+      <div class="row">
+        <button class="btn" id="resumeBtn">Resume</button>
+        <button class="btn" id="muteBtn">Mute</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ===========================
+   Configuration & State
+   =========================== */
+const COLS = 4, ROWS = 6;
+const FRUITS = ['🍎','🍌','🍇','🍊','🍉','🍓','🍒','🍍'];
+
+const board = document.getElementById('board');
+const scoreDisplay = document.getElementById('scoreDisplay');
+const shuffleBtn = document.getElementById('shuffleBtn');
+const bombBtn = document.getElementById('bombBtn');
+const bombIcon = document.getElementById('bombIcon');
+const pauseBtn = document.getElementById('pauseBtn');
+const pauseModal = document.getElementById('pauseModal');
+const resumeBtn = document.getElementById('resumeBtn');
+const muteBtn = document.getElementById('muteBtn');
+const volumeSlider = document.getElementById('volumeSlider');
+
+let values = [];   // values[r][c] -> char or null
+let tiles = [];    // tiles[r][c] -> DOM element or null
+let score = 0, coins = 0;
+let firstSel = null; // {r,c}
+let busy = false;
+let gamePaused = false;
+
+/* Audio (Slide.mp3 used for both match & bomb as requested) */
+const bgm = new Audio('bgmusic.mp3'); bgm.loop = true; bgm.volume = 0.6;
+const slideSnd = new Audio('Slide.mp3'); slideSnd.volume = 0.95;
+
+/* unlock audio on first interaction */
+function unlockAudio(){ bgm.play().catch(()=>{}); document.body.removeEventListener('click', unlockAudio); }
+document.body.addEventListener('click', unlockAudio, {once:true});
+
+/* ===========================
+   Layout helpers
+   =========================== */
+function cellLeft(c){ const size = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--cell')) || 88; const gap = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--gap')) || 8; return c*(size+gap)+gap; }
+function cellTop(r){ const size = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--cell')) || 88; const gap = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--gap')) || 8; return r*(size+gap)+gap; }
+function setScoreUI(){ scoreDisplay.textContent = `Score: ${score} | Coins: ${coins}`; shuffleBtn.disabled = coins < 10; bombBtn.disabled = coins < 15; }
+
+/* ===========================
+   Init values & board
+   =========================== */
+function initValues(){
+  values = Array.from({length:ROWS}, ()=>Array(COLS).fill(null));
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) values[r][c] = randFruit();
+}
+
+function randFruit(){ return FRUITS[Math.floor(Math.random()*FRUITS.length)]; }
+
+function buildBoardDOM(){
+  board.innerHTML = '';
+  // draw slot backgrounds in grid order so board has proper spacing
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      const slot = document.createElement('div');
+      slot.className = 'slot';
+      board.appendChild(slot);
+    }
+  }
+  tiles = Array.from({length:ROWS}, ()=>Array(COLS).fill(null));
+  // create tile DOM for each non-null value
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      createTileDOM(r,c, values[r][c], true);
+    }
+  }
+}
+
+/* create tile DOM element at grid position (optionally instant true => place at exact cell) */
+function createTileDOM(r,c,char,instant=false){
+  const t = document.createElement('div');
+  t.className = 'tile';
+  t.textContent = char;
+  t.dataset.r = r; t.dataset.c = c;
+  const l = cellLeft(c), tp = cellTop(r);
+  if(instant){
+    t.style.left = l + 'px';
+    t.style.top = tp + 'px';
+  } else {
+    // spawn above and fall
+    t.style.left = l + 'px';
+    t.style.top = (tp - 140) + 'px';
+    t.style.opacity = '0';
+    // we'll append and then animate to top
+  }
+  t.addEventListener('click', ()=>onTileClick(t));
+  board.appendChild(t);
+  tiles[r][c] = t;
+  if(!instant){
+    // animate into place
+    requestAnimationFrame(()=> {
+      t.style.transition = 'top 420ms cubic-bezier(.2,.9,.2,1), opacity 320ms';
+      t.style.top = tp + 'px'; t.style.opacity = '1';
+      setTimeout(()=> t.style.transition = '', 440);
+    });
+  }
+}
+
+/* remove tile DOM safely */
+function removeTileDOM(r,c){
+  const t = tiles[r][c];
+  if(t){ t.remove(); tiles[r][c] = null; }
+}
+
+/* ===========================
+   Match detection (values-based)
+   Returns array of positions [{r,c}, ...]
+   =========================== */
+function findMatchesFromValues(){
+  const set = new Set();
+  // horizontal
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS-2;c++){
+      const v = values[r][c];
+      if(!v) continue;
+      if(v === values[r][c+1] && v === values[r][c+2]){
+        set.add(`${r},${c}`); set.add(`${r},${c+1}`); set.add(`${r},${c+2}`);
+        let k = c+3;
+        while(k < COLS && values[r][k] === v){ set.add(`${r},${k}`); k++; }
+      }
+    }
+  }
+  // vertical
+  for(let c=0;c<COLS;c++){
+    for(let r=0;r<ROWS-2;r++){
+      const v = values[r][c];
+      if(!v) continue;
+      if(v === values[r+1][c] && v === values[r+2][c]){
+        set.add(`${r},${c}`); set.add(`${r+1},${c}`); set.add(`${r+2},${c}`);
+        let k = r+3;
+        while(k < ROWS && values[k][c] === v){ set.add(`${k},${c}`); k++; }
+      }
+    }
+  }
+  return Array.from(set).map(s => { const [r,c] = s.split(',').map(Number); return {r,c}; });
+}
+
+/* ===========================
+   Swap animation (cloned tiles) - returns Promise
+   =========================== */
+function animateSwapDOM(tileA, tileB){
+  return new Promise(res=>{
+    const rectA = tileA.getBoundingClientRect();
+    const rectB = tileB.getBoundingClientRect();
+    const dx = rectB.left - rectA.left, dy = rectB.top - rectA.top;
+
+    const cloneA = tileA.cloneNode(true);
+    const cloneB = tileB.cloneNode(true);
+    cloneA.style.position = cloneB.style.position = 'fixed';
+    cloneA.style.left = rectA.left + 'px'; cloneA.style.top = rectA.top + 'px';
+    cloneB.style.left = rectB.left + 'px'; cloneB.style.top = rectB.top + 'px';
+    cloneA.style.margin = cloneB.style.margin = '0';
+    cloneA.style.zIndex = cloneB.style.zIndex = 9999;
+    document.body.appendChild(cloneA); document.body.appendChild(cloneB);
+    tileA.style.visibility = tileB.style.visibility = 'hidden';
+
+    // animate clones
+    requestAnimationFrame(()=> {
+      cloneA.style.transition = 'transform 320ms cubic-bezier(.2,.9,.2,1), opacity 220ms';
+      cloneB.style.transition = 'transform 320ms cubic-bezier(.2,.9,.2,1), opacity 220ms';
+      cloneA.style.transform = `translate(${dx}px, ${dy}px)`;
+      cloneB.style.transform = `translate(${-dx}px, ${-dy}px)`;
+    });
+
+    setTimeout(()=> {
+      // swap textual content on originals
+      const tmp = tileA.textContent;
+      tileA.textContent = tileB.textContent;
+      tileB.textContent = tmp;
+      tileA.style.visibility = tileB.style.visibility = '';
+      cloneA.remove(); cloneB.remove();
+      res();
+    }, 360);
+  });
+}
+
+/* ===========================
+   Handle matches: animate slide-to-center & pop, clear values,
+   then call gravity animation to drop and refill
+   =========================== */
+function handleMatchesFromValues(matchPositions){
+  if(!matchPositions || matchPositions.length === 0) return;
+  busy = true;
+  // compute center point
+  let cx = 0, cy = 0;
+  matchPositions.forEach(p => {
+    const t = tiles[p.r][p.c];
+    const r = t.getBoundingClientRect();
+    cx += r.left + r.width/2; cy += r.top + r.height/2;
+  });
+  cx /= matchPositions.length; cy /= matchPositions.length;
+
+  // play slide sound
+  slideSnd.currentTime = 0; slideSnd.play().catch(()=>{});
+
+  // animate each to center and pop
+  matchPositions.forEach((p, i) => {
+    const t = tiles[p.r][p.c];
+    const r = t.getBoundingClientRect();
+    const dx = cx - (r.left + r.width/2);
+    const dy = cy - (r.top + r.height/2);
+    // move to center visually
+    t.style.transition = 'transform 420ms cubic-bezier(.2,.9,.2,1), opacity 300ms';
+    t.style.transform = `translate(${dx}px, ${dy}px) scale(.9)`;
+    // small stagger then pop
+    setTimeout(()=> {
+      spawnSparksAt(r.left + r.width/2, r.top + r.height/2);
+      t.classList.add('pop');
+    }, 420 + i*45);
+  });
+
+  // after animation: remove DOM tiles and clear values
+  setTimeout(()=> {
+    // unique positions
+    const unique = {};
+    matchPositions.forEach(p => unique[`${p.r},${p.c}`] = true);
+    const posList = Object.keys(unique).map(s => s.split(',').map(Number)).map(a=>({r:a[0], c:a[1]}));
+    posList.forEach(p => {
+      // clear value and remove DOM
+      values[p.r][p.c] = null;
+      removeTileDOM(p.r, p.c);
+    });
+    // award
+    score += posList.length * 10;
+    coins += posList.length;
+    setScoreUI();
+    // apply gravity animation to collapse and refill
+    setTimeout(()=> {
+      applyGravityAnimated().then(()=> {
+        busy = false;
+        // cascade
+        const nextMatches = findMatchesFromValues();
+        if(nextMatches.length) handleMatchesFromValues(nextMatches);
+        else ensurePossibleMove();
+      });
+    }, 100);
+  }, 900);
+}
+
+/* ===========================
+   Gravity: collapse values column-wise, animate tiles falling
+   =========================== */
+function applyGravityAnimated(){
+  return new Promise(async (resolve) => {
+    // For each column, collapse non-null values down into array 'colVals'
+    for(let c=0;c<COLS;c++){
+      const colVals = [];
+      for(let r=0;r<ROWS;r++){
+        if(values[r][c]) colVals.push(values[r][c]);
+      }
+      // compute new column values bottom-up
+      let rptr = ROWS - 1;
+      for(let i = colVals.length - 1; i >= 0; i--){
+        values[rptr][c] = colVals[i];
+        rptr--;
+      }
+      // fill remaining top entries with null for now
+      while(rptr >= 0){ values[rptr][c] = null; rptr--; }
+    }
+
+    // Remove all existing tile DOM in column; we'll re-create them animating from above
+    // But to preserve sliding down of existing tiles (not full re-create), we'll:
+    // Approach: collect final column arrays (targetPositions), remove DOM, then spawn existing ones from high above to target slots with slight stagger.
+    // Simpler & smooth approach: remove all DOM tiles then spawn tiles for each cell (existing colVals + new ones) with fall animation.
+    // Remove DOM:
+    document.querySelectorAll('.tile').forEach(t => t.remove());
+    tiles = Array.from({length:ROWS}, ()=>Array(COLS).fill(null));
+
+    // For each column, create tiles from bottom to top: first existing colVals then spawn random for the rest
+    const animPromises = [];
+    for(let c=0;c<COLS;c++){
+      // final column values bottom-up:
+      const finalCol = [];
+      for(let r=ROWS-1; r>=0; r--){
+        if(values[r][c]) finalCol.push(values[r][c]);
+        else {
+          // will fill later; for now push placeholder to be replaced with new fruit
+          finalCol.push(null);
+        }
+      }
+      // finalCol[0] is bottom-most, finalCol[ROWS-1] top-most (some nulls)
+      // We'll produce an array of resulting characters top->bottom to spawn
+      const spawnArr = [];
+      for(let r=ROWS-1; r>=0; r--) spawnArr.push(values[r][c]); // bottom->top
+      // But many top entries may be null — replace nulls with random new fruits; those will "rain"
+      for(let i=0;i<spawnArr.length;i++){
+        if(spawnArr[i] === null) spawnArr[i] = randFruit();
+      }
+      // place from top index = spawnArr.length-1 down to 0
+      for(let k = spawnArr.length - 1, idxR = 0; k >=0; k--, idxR++){
+        const rTarget = idxR; // top to bottom mapping (we will place actual later by index)
+      }
+      // Instead of overcomplicating mapping, simpler: final values matrix already contains intended characters at each cell (we filled nulls with random below).
+      // So let's ensure values has no nulls now by filling top nulls:
+      for(let r=0;r<ROWS;r++){
+        if(!values[r][c]) values[r][c] = randFruit();
+      }
+      // Now create tile DOM from top (r=0) to bottom (r=ROWS-1) but animate them falling from above, with small stagger so it looks like rain
+      for(let r=0;r<ROWS;r++){
+        const char = values[r][c];
+        const t = document.createElement('div');
+        t.className = 'tile';
+        t.textContent = char;
+        t.dataset.r = r; t.dataset.c = c;
+        const left = cellLeft(c);
+        const top = cellTop(r);
+        // start higher
+        t.style.left = left + 'px';
+        t.style.top = (top - 160 - Math.random()*80) + 'px';
+        t.style.opacity = '0';
+        t.addEventListener('click', ()=>onTileClick(t));
+        board.appendChild(t);
+        tiles[r][c] = t;
+        // animate into place with slight delay depending on r (higher fall a bit later)
+        animPromises.push(new Promise(res=>{
+          setTimeout(()=> {
+            requestAnimationFrame(()=> {
+              t.style.transition = 'top 420ms cubic-bezier(.2,.9,.2,1), opacity 320ms';
+              t.style.top = top + 'px';
+              t.style.opacity = '1';
+              setTimeout(()=>{ t.style.transition = ''; res(); }, 440);
+            });
+          }, 60 + (r * 30) + Math.random()*80);
+        }));
+      }
+    } // end for columns
+
+    await Promise.all(animPromises);
+    resolve();
+  });
+}
+
+/* ===========================
+   Tile click logic (select / swap)
+   Works using 'values' matrix for matches
+   =========================== */
+function onTileClick(tile){
+  if(busy || gamePaused) return;
+  const r = +tile.dataset.r, c = +tile.dataset.c;
+  if(!firstSel){
+    firstSel = {r,c};
+    tile.style.transform = 'scale(1.06)';
+    return;
+  }
+  // same tile? deselect
+  if(firstSel.r === r && firstSel.c === c){
+    const prev = tiles[firstSel.r][firstSel.c];
+    if(prev) prev.style.transform = '';
+    firstSel = null; return;
+  }
+  // check adjacency
+  const dr = Math.abs(firstSel.r - r), dc = Math.abs(firstSel.c - c);
+  if(dr + dc !== 1){
+    // deselect prev and select current
+    const prev = tiles[firstSel.r][firstSel.c];
+    if(prev) prev.style.transform = '';
+    firstSel = {r,c}; tile.style.transform = 'scale(1.06)';
+    return;
+  }
+
+  // perform animated swap between tiles DOM
+  const tileA = tiles[firstSel.r][firstSel.c];
+  const tileB = tiles[r][c];
+  busy = true;
+  animateSwapDOM(tileA, tileB).then(()=>{
+    // swap values
+    const tmp = values[firstSel.r][firstSel.c];
+    values[firstSel.r][firstSel.c] = values[r][c];
+    values[r][c] = tmp;
+    // update dataset coordinates on DOM tiles to reflect new logical positions
+    tileA.dataset.r = r; tileA.dataset.c = c;
+    tileB.dataset.r = firstSel.r; tileB.dataset.c = firstSel.c;
+    tiles[r][c] = tileA; tiles[firstSel.r][firstSel.c] = tileB;
+    // reset transforms
+    tileA.style.transform = ''; tileB.style.transform = '';
+    // check matches
+    const matches = findMatchesFromValues();
+    if(matches.length){
+      handleMatchesFromValues(matches);
+    } else {
+      // revert after short delay visually
+      setTimeout(()=> {
+        animateSwapDOM(tileA, tileB).then(()=>{
+          // swap values back
+          const tmp2 = values[firstSel.r][firstSel.c];
+          values[firstSel.r][firstSel.c] = values[r][c];
+          values[r][c] = tmp2;
+          // restore dataset coords
+          tileA.dataset.r = firstSel.r; tileA.dataset.c = firstSel.c;
+          tileB.dataset.r = r; tileB.dataset.c = c;
+          tiles[firstSel.r][firstSel.c] = tileA; tiles[r][c] = tileB;
+          busy = false;
+        });
+      }, 160);
+    }
+    firstSel = null;
+  });
+}
+
+/* ===========================
+   Ensure at least one possible move; if not shuffle
+   (operates on values)
+   =========================== */
+function possibleMoveExists(){
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
+      if(c < COLS-1){
+        [values[r][c], values[r][c+1]] = [values[r][c+1], values[r][c]];
+        if(findMatchesFromValues().length > 0){ [values[r][c], values[r][c+1]] = [values[r][c+1], values[r][c]]; return true; }
+        [values[r][c], values[r][c+1]] = [values[r][c+1], values[r][c]];
+      }
+      if(r < ROWS-1){
+        [values[r][c], values[r+1][c]] = [values[r+1][c], values[r][c]];
+        if(findMatchesFromValues().length > 0){ [values[r][c], values[r+1][c]] = [values[r+1][c], values[r][c]]; return true; }
+        [values[r][c], values[r+1][c]] = [values[r+1][c], values[r][c]];
+      }
+    }
+  }
+  return false;
+}
+function ensurePossibleMove(){
+  if(!possibleMoveExists()){
+    // shuffle values randomly
+    const flat = [];
+    for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) flat.push(values[r][c]);
+    for(let i=flat.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); [flat[i], flat[j]] = [flat[j], flat[i]]; }
+    for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) values[r][c] = flat[r*COLS + c];
+    // render instantly without heavy animation
+    document.querySelectorAll('.tile').forEach(t => t.remove());
+    tiles = Array.from({length:ROWS}, ()=>Array(COLS).fill(null));
+    for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) createTileDOM(r,c, values[r][c], true);
+    // try again after a bit
+    setTimeout(()=>{ if(!possibleMoveExists()) ensurePossibleMove(); }, 220);
+  }
+}
+
+/* ===========================
+   Bomb: purchase, plant, blast 4x4, use Slide.mp3 as bomb sound
+   =========================== */
+bombBtn.addEventListener('click', ()=>{
+  if(busy || gamePaused) return;
+  if(coins < 15){ alert('Not enough coins (15 required).'); return; }
+  coins -= 15; setScoreUI();
+  plantAndBlast();
+});
+
+function plantAndBlast(){
+  busy = true;
+  // choose 4x4 area: rows 1..4 and cols 0..3 (fits board)
+  const r0 = 1, c0 = 0;
+  // plant animation: scale those tiles and glow
+  for(let r=r0;r<r0+4;r++) for(let c=c0;c<c0+4;c++){
+    const t = tiles[r][c];
+    if(t) t.classList.add('plant');
+  }
+  // after plant delay -> blast
+  setTimeout(()=>{
+    slideSnd.currentTime = 0; slideSnd.play().catch(()=>{});
+    // add blast class & particle for each
+    const toClear = [];
+    for(let r=r0;r<r0+4;r++){
+      for(let c=c0;c<c0+4;c++){
+        const t = tiles[r][c];
+        if(t){
+          t.classList.remove('plant');
+          t.classList.add('blast');
+          const rect = t.getBoundingClientRect();
+          spawnSparksAt(rect.left + rect.width/2, rect.top + rect.height/2, 10);
+        }
+        values[r][c] = null;
+        toClear.push({r,c});
+      }
+    }
+    // after blast animation remove DOM and refill
+    setTimeout(()=> {
+      toClear.forEach(p => removeTileDOM(p.r, p.c));
+      // score bonus
+      score += 4*4*5;
+      setScoreUI();
+      applyGravityAnimated().then(()=> {
+        busy = false;
+        const matches = findMatchesFromValues();
+        if(matches.length) handleMatchesFromValues(matches);
+        else ensurePossibleMove();
+      });
+    }, 920);
+  }, 800);
+}
+
+/* ===========================
+   Particle / sparks utility
+   spawnSparksAt(x,y,count)
+   =========================== */
+function spawnSparksAt(x,y,count=8){
+  for(let i=0;i<count;i++){
+    const s = document.createElement('div');
+    s.className = 'spark';
+    s.style.left = (x - board.getBoundingClientRect().left) + 'px';
+    s.style.top = (y - board.getBoundingClientRect().top) + 'px';
+    const hue = Math.floor(Math.random()*360);
+    s.style.background = `hsl(${hue},90%,60%)`;
+    const dx = (Math.random()-0.5)*300;
+    const dy = - (60 + Math.random()*260);
+    s.style.transform = `translate(0px,0px)`;
+    board.appendChild(s);
+    // animate using transform
+    requestAnimationFrame(()=> {
+      s.style.transition = 'transform 700ms cubic-bezier(.2,.9,.2,1), opacity 700ms';
+      s.style.transform = `translate(${dx}px, ${dy}px)`;
+      s.style.opacity = '0';
+    });
+    setTimeout(()=> s.remove(), 800);
+  }
+}
+
+/* ===========================
+   Controls: shuffle, pause/resume, volume, mute
+   =========================== */
+shuffleBtn.addEventListener('click', ()=>{
+  if(busy || gamePaused) return;
+  if(coins < 10) return;
+  coins -= 10; setScoreUI();
+  // shuffle
+  const flat = [];
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) flat.push(values[r][c]);
+  for(let i=flat.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); [flat[i], flat[j]] = [flat[j], flat[i]]; }
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) values[r][c] = flat[r*COLS + c];
+  // re-render instantly
+  document.querySelectorAll('.tile').forEach(t => t.remove());
+  tiles = Array.from({length:ROWS}, ()=>Array(COLS).fill(null));
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++) createTileDOM(r,c, values[r][c], true);
+  ensurePossibleMove();
+});
+
+pauseBtn.addEventListener('click', ()=>{ gamePaused = true; pauseModal.style.display = 'flex'; bgm.pause(); });
+resumeBtn.addEventListener('click', ()=>{ gamePaused = false; pauseModal.style.display = 'none'; bgm.play().catch(()=>{}); });
+muteBtn.addEventListener('click', ()=>{ bgm.muted = !bgm.muted; slideSnd.muted = bgm.muted; muteBtn.textContent = bgm.muted ? 'Unmute' : 'Mute'; });
+volumeSlider.addEventListener('input', ()=>{ const v = parseFloat(volumeSlider.value); bgm.volume = v; slideSnd.volume = v; });
+
+/* ===========================
+   Utility: clear ANY initial matches and ensure possible move then start
+   =========================== */
+function removeInitialMatchesAndEnsure(){
+  let tries = 0;
+  let m = findMatchesFromValues();
+  while(m.length && tries < 20){
+    m.forEach(p => values[p.r][p.c] = randFruit());
+    m = findMatchesFromValues(); tries++;
+  }
+  buildBoardDOM();
+  ensurePossibleMove();
+}
+
+/* ===========================
+   Init everything
+   =========================== */
+function initGame(){
+  initValues();
+  removeInitialMatchesAndEnsure();
+  setScoreUI();
+}
+initGame();
+
+</script>
+</body>
+</html>
